@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Connect 4</title>
+<style>
+  :root {
+    --bg: #f4f1ea;
+    --text: #1f2430;
+    --muted: #5c6370;
+    --board: #2453b3;
+    --board-edge: #1a3f8a;
+    --hole: #f4f1ea;
+    --red: #d7263d;
+    --yellow: #f2c230;
+    --button: #1f2430;
+    --button-text: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161c;
+      --text: #e8e9ec;
+      --muted: #9aa0ab;
+      --board: #2a5bc4;
+      --board-edge: #1c428f;
+      --hole: #14161c;
+      --button: #e8e9ec;
+      --button-text: #14161c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 16px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  h1 { margin: 0; font-size: 1.75rem; letter-spacing: 0.02em; }
+  #status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 32px;
+    font-size: 1.1rem;
+    font-weight: 600;
+  }
+  .chip {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .chip.red { background: var(--red); }
+  .chip.yellow { background: var(--yellow); }
+  #board {
+    --size: min(12vw, 72px);
+    display: grid;
+    grid-template-columns: repeat(7, var(--size));
+    gap: calc(var(--size) * 0.12);
+    padding: calc(var(--size) * 0.16);
+    background: var(--board);
+    border-bottom: 8px solid var(--board-edge);
+    border-radius: 14px;
+    position: relative;
+  }
+  .col {
+    display: grid;
+    grid-template-rows: repeat(6, var(--size));
+    gap: calc(var(--size) * 0.12);
+    cursor: pointer;
+    border-radius: 999px;
+    outline: none;
+  }
+  .col:focus-visible { box-shadow: 0 0 0 3px var(--yellow); }
+  .over .col { cursor: default; }
+  .cell {
+    width: var(--size);
+    height: var(--size);
+    border-radius: 50%;
+    background: var(--hole);
+    box-shadow: inset 0 4px 6px rgba(0, 0, 0, 0.25);
+    position: relative;
+    overflow: hidden;
+  }
+  .disc {
+    position: absolute;
+    inset: 6%;
+    border-radius: 50%;
+    box-shadow: inset 0 -4px 0 rgba(0, 0, 0, 0.2);
+  }
+  .disc.red { background: var(--red); }
+  .disc.yellow { background: var(--yellow); }
+  .disc.drop { animation: drop var(--drop-time, 300ms) cubic-bezier(0.5, 0, 0.75, 0) both; }
+  @keyframes drop {
+    from { transform: translateY(var(--drop-from)); }
+    to { transform: translateY(0); }
+  }
+  .disc.win { animation: pulse 0.8s ease-in-out infinite alternate; }
+  @keyframes pulse {
+    from { box-shadow: inset 0 -4px 0 rgba(0, 0, 0, 0.2), 0 0 0 0 #fff; }
+    to { box-shadow: inset 0 -4px 0 rgba(0, 0, 0, 0.2), 0 0 0 5px #fff; }
+  }
+  .col:hover .cell.preview, .col:focus-visible .cell.preview {
+    background: color-mix(in srgb, var(--hole) 60%, var(--preview));
+  }
+  .controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: center; }
+  button {
+    font: inherit;
+    font-weight: 600;
+    padding: 10px 20px;
+    border: none;
+    border-radius: 8px;
+    background: var(--button);
+    color: var(--button-text);
+    cursor: pointer;
+  }
+  button:hover { opacity: 0.85; }
+  .score { color: var(--muted); font-size: 0.95rem; }
+  .hint { color: var(--muted); font-size: 0.85rem; margin: 0; text-align: center; }
+</style>
+</head>
+<body>
+  <h1>Connect 4</h1>
+  <div id="status" aria-live="polite"></div>
+  <div id="board" role="grid" aria-label="Connect 4 board"></div>
+  <div class="controls">
+    <button id="reset">New game</button>
+    <span class="score" id="score"></span>
+  </div>
+  <p class="hint">Click a column to drop a disc. Keyboard: keys 1–7.</p>
+
+<script>
+  const ROWS = 6;
+  const COLS = 7;
+  const PLAYERS = ["red", "yellow"];
+  const NAMES = { red: "Red", yellow: "Yellow" };
+
+  const boardEl = document.getElementById("board");
+  const statusEl = document.getElementById("status");
+  const scoreEl = document.getElementById("score");
+
+  let grid, current, gameOver, busy;
+  let starter = 0;
+  const score = { red: 0, yellow: 0, draw: 0 };
+
+  function buildBoard() {
+    boardEl.innerHTML = "";
+    for (let c = 0; c < COLS; c++) {
+      const col = document.createElement("div");
+      col.className = "col";
+      col.tabIndex = 0;
+      col.dataset.col = c;
+      col.setAttribute("role", "button");
+      col.setAttribute("aria-label", "Column " + (c + 1));
+      for (let r = 0; r < ROWS; r++) {
+        const cell = document.createElement("div");
+        cell.className = "cell";
+        cell.dataset.row = r;
+        col.appendChild(cell);
+      }
+      col.addEventListener("click", () => play(c));
+      col.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); play(c); }
+      });
+      boardEl.appendChild(col);
+    }
+  }
+
+  function cellEl(r, c) {
+    return boardEl.children[c].children[r];
+  }
+
+  function newGame() {
+    grid = Array.from({ length: ROWS }, () => Array(COLS).fill(null));
+    current = PLAYERS[starter];
+    starter = 1 - starter; // alternate who goes first each game
+    gameOver = false;
+    busy = false;
+    boardEl.classList.remove("over");
+    buildBoard();
+    updatePreview();
+    updateStatus();
+  }
+
+  function lowestEmpty(c) {
+    for (let r = ROWS - 1; r >= 0; r--) if (!grid[r][c]) return r;
+    return -1;
+  }
+
+  function play(c) {
+    if (gameOver || busy) return;
+    const r = lowestEmpty(c);
+    if (r < 0) return;
+
+    grid[r][c] = current;
+    const disc = document.createElement("div");
+    disc.className = "disc drop " + current;
+    // Fall from above the board: distance scales with the target row.
+    disc.style.setProperty("--drop-from", "calc(-" + (r + 1) + " * var(--size) * 1.12)");
+    disc.style.setProperty("--drop-time", (180 + r * 55) + "ms");
+    cellEl(r, c).appendChild(disc);
+
+    busy = true;
+    disc.addEventListener("animationend", () => { busy = false; }, { once: true });
+
+    const line = findWin(r, c);
+    if (line) {
+      gameOver = true;
+      score[current]++;
+      line.forEach(([wr, wc]) => cellEl(wr, wc).firstChild.classList.add("win"));
+      endGame(NAMES[current] + " wins!", current);
+    } else if (grid[0].every(Boolean)) {
+      gameOver = true;
+      score.draw++;
+      endGame("It's a draw.", null);
+    } else {
+      current = current === "red" ? "yellow" : "red";
+      updatePreview();
+      updateStatus();
+    }
+  }
+
+  function findWin(r, c) {
+    const who = grid[r][c];
+    const dirs = [[0, 1], [1, 0], [1, 1], [1, -1]];
+    for (const [dr, dc] of dirs) {
+      const line = [[r, c]];
+      for (const sign of [1, -1]) {
+        let nr = r + dr * sign, nc = c + dc * sign;
+        while (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS && grid[nr][nc] === who) {
+          line.push([nr, nc]);
+          nr += dr * sign;
+          nc += dc * sign;
+        }
+      }
+      if (line.length >= 4) return line;
+    }
+    return null;
+  }
+
+  function endGame(message, winner) {
+    boardEl.classList.add("over");
+    document.querySelectorAll(".cell.preview").forEach((el) => el.classList.remove("preview"));
+    statusEl.innerHTML = (winner ? '<span class="chip ' + winner + '"></span>' : "") + message;
+    updateScore();
+  }
+
+  function updatePreview() {
+    boardEl.style.setProperty("--preview", "var(--" + current + ")");
+    for (let c = 0; c < COLS; c++) {
+      const r = lowestEmpty(c);
+      for (let row = 0; row < ROWS; row++) {
+        cellEl(row, c).classList.toggle("preview", row === r);
+      }
+    }
+  }
+
+  function updateStatus() {
+    statusEl.innerHTML = '<span class="chip ' + current + '"></span>' + NAMES[current] + "'s turn";
+    updateScore();
+  }
+
+  function updateScore() {
+    scoreEl.textContent = "Red " + score.red + " · Yellow " + score.yellow + " · Draws " + score.draw;
+  }
+
+  document.getElementById("reset").addEventListener("click", newGame);
+  document.addEventListener("keydown", (e) => {
+    const n = parseInt(e.key, 10);
+    if (n >= 1 && n <= COLS) play(n - 1);
+  });
+
+  newGame();
+</script>
+</body>
+</html>
