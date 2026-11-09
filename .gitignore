@@ -1,0 +1,13 @@
+.venv/
+
+# Chroma vector databases
+chroma_db/
+**/chroma_db/
+.chroma/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Secrets
+.env
