@@ -4,16 +4,20 @@ Usage:
     python week-03/ask.py "How long do I have to submit an expense report?"
     python week-03/ask.py --k 8 "What are the meal limits in Boston?"
     python week-03/ask.py --rebuild "..."      # re-index the documents first
+    python week-03/ask.py --docs week-03/larkfield-docs "What is the overdraft fee?"
+    python week-03/ask.py --save week-03/runs/q1.txt "..."   # also save the output
 
-The documents in week-03/copperline-docs are split into chunks, embedded with
-Chroma's default local embedding model, and stored in week-03/chroma_db. For a
-question, the most similar chunks are retrieved and printed, then Claude answers
-using only those chunks and cites the source file for each fact.
+The documents in a folder (week-03/copperline-docs unless --docs names another)
+are split into chunks, embedded with Chroma's default local embedding model, and
+stored in a database for that folder under week-03/chroma_db. For a question, the
+most similar chunks are retrieved and printed, then Claude answers using only
+those chunks and cites the source file for each fact.
 
 The Anthropic API key is read only from the ANTHROPIC_API_KEY environment variable.
 """
 
 import argparse
+import hashlib
 import os
 import re
 import sys
@@ -24,9 +28,9 @@ import chromadb
 from pypdf import PdfReader
 
 HERE = Path(__file__).resolve().parent
-DOCS_DIR = HERE / "copperline-docs"
-DB_DIR = HERE / "chroma_db"
-COLLECTION = "copperline_docs"
+DEFAULT_DOCS_DIR = HERE / "copperline-docs"
+DB_ROOT = HERE / "chroma_db"  # one database per document folder lives under here
+COLLECTION = "docs"
 MODEL = "claude-sonnet-5"
 
 CHUNK_CHARS = 1000   # target maximum characters per chunk
@@ -200,27 +204,38 @@ def load_chunks(docs_dir):
 
 # ---------------------------------------------------------------- vector store
 
-def get_collection(rebuild=False):
-    client = chromadb.PersistentClient(path=str(DB_DIR))
+def db_dir_for(docs_dir):
+    """Returns the database folder for a document folder.
+
+    The name combines the folder's name with a short hash of its full path, so two
+    folders with the same name in different places never share a database.
+    """
+    digest = hashlib.sha1(str(docs_dir).lower().encode("utf-8")).hexdigest()[:8]
+    return DB_ROOT / f"{docs_dir.name}-{digest}"
+
+
+def get_collection(docs_dir, rebuild=False):
+    db_dir = db_dir_for(docs_dir)
+    client = chromadb.PersistentClient(path=str(db_dir))
     if rebuild:
         try:
             client.delete_collection(COLLECTION)
         except Exception:
             pass
     collection = client.get_or_create_collection(
-        COLLECTION, metadata={"hnsw:space": "cosine"}
+        COLLECTION, metadata={"hnsw:space": "cosine", "docs_dir": str(docs_dir)}
     )
     if collection.count() == 0:
-        print(f"Building the database from {DOCS_DIR} ...")
-        chunks = load_chunks(DOCS_DIR)
+        print(f"Building the database from {docs_dir} ...")
+        chunks = load_chunks(docs_dir)
         if not chunks:
-            sys.exit(f"No documents found in {DOCS_DIR}")
+            sys.exit(f"No documents found in {docs_dir}")
         collection.add(
             ids=[c["id"] for c in chunks],
             documents=[c["text"] for c in chunks],
             metadatas=[{"source": c["source"], "section": c["section"]} for c in chunks],
         )
-        print(f"Stored {len(chunks)} chunks in {DB_DIR}\n")
+        print(f"Stored {len(chunks)} chunks in {db_dir}\n")
     return collection
 
 
@@ -302,15 +317,23 @@ def main():
     parser.add_argument("question", nargs="*", help="the question to ask")
     parser.add_argument("--k", type=int, default=5, help="number of chunks to retrieve (default 5)")
     parser.add_argument("--rebuild", action="store_true", help="re-index the documents first")
+    parser.add_argument("--docs", type=Path, default=DEFAULT_DOCS_DIR,
+                        help="folder of documents to answer from (default week-03/copperline-docs)")
+    parser.add_argument("--save", type=Path, metavar="FILE",
+                        help="also write the retrieved chunks and the answer to FILE (UTF-8)")
     args = parser.parse_args()
 
-    collection = get_collection(rebuild=args.rebuild)
+    docs_dir = args.docs.resolve()
+    if not docs_dir.is_dir():
+        parser.error(f"document folder not found: {args.docs}")
 
     question = " ".join(args.question).strip()
-    if not question:
-        if args.rebuild:
-            return
+    if not question and not args.rebuild:
         parser.error("please give a question")
+
+    collection = get_collection(docs_dir, rebuild=args.rebuild)
+    if not question:
+        return
 
     results = retrieve(collection, question, args.k)
 
@@ -323,10 +346,28 @@ def main():
         print("-" * 72)
         print(r["text"])
 
+    answer = ask_claude(question, results)
     print("\n" + "=" * 72)
     print(f"Answer ({MODEL})")
     print("=" * 72)
-    print(ask_claude(question, results))
+    print(answer)
+
+    if args.save:
+        save_run(args.save, results, answer)
+        print(f"\nSaved this run to {args.save}")
+
+
+def save_run(path, results, answer):
+    """Writes the retrieved chunks, a line containing only ANSWER, then the answer."""
+    lines = []
+    for i, r in enumerate(results, 1):
+        lines.append(f"#{i}  score {r['score']:.3f}  source: {r['source']}")
+        lines.append(r["text"])
+        lines.append("")
+    lines.append("ANSWER")
+    lines.append(answer)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":
